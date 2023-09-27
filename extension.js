@@ -15,28 +15,38 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-const { Clutter, Meta, GObject } = imports.gi;
-const Main = imports.ui.main;
-const altTab = imports.ui.altTab;
+import Clutter from "gi://Clutter";
 
-let CurrentMonitorWindowSwitcherPopup;
-let CurrentMonitorAppSwitcherPopup;
-let extension = null;
+import * as altTab from "resource:///org/gnome/shell/ui/altTab.js";
+
+function patch(target, name, fn) {
+    const orig = target[name];
+    target[name] = fn(orig);
+    return () => {
+        target[name] = orig;
+    };
+}
 
 class Extension {
     constructor() {
-        this.origMethods = {
-			"windowSwitcherPopup": altTab.WindowSwitcherPopup,
-            "appSwitcherPopup": altTab.AppSwitcherPopup
-        };
-
-		altTab.WindowSwitcherPopup = CurrentMonitorWindowSwitcherPopup;
-        altTab.AppSwitcherPopup = CurrentMonitorAppSwitcherPopup;
-
         const seat = Clutter.get_default_backend().get_default_seat();
         this.vdevice = seat.create_virtual_device(
-            Clutter.InputDeviceType.POINTER_DEVICE
+            Clutter.InputDeviceType.POINTER_DEVICE,
         );
+
+        this.patches = [
+            patch(altTab.WindowSwitcherPopup, "_finish", (orig) => () => {
+                this.movePointer();
+                orig();
+            }),
+
+            patch(altTab.AppSwitcherPopup, "_finish", (orig) => (timestamp) => {
+                if (this._currentWindow < 0) {
+                    this.movePointer();
+                }
+                orig(timestamp);
+            }),
+        ];
     }
 
     movePointer() {
@@ -44,38 +54,19 @@ class Extension {
         this.vdevice.notify_absolute_motion(global.get_current_time(), x, y);
     }
 
-    destroy() {
-		altTab.WindowSwitcherPopup = this.origMethods["windowSwitcherPopup"];
-        altTab.AppSwitcherPopup = this.origMethods["appSwitcherPopup"];
+    unpatch() {
+        this.patches.forEach((unpatch) => unpatch());
     }
 }
 
-function init() {
-	CurrentMonitorWindowSwitcherPopup = GObject.registerClass(
-		class CurrentMonitorWindowSwitcherPopup extends altTab.WindowSwitcherPopup {
-			_finish() {
-				extension.movePointer();
-				super._finish();
-			}
-		}
-	);
-    CurrentMonitorAppSwitcherPopup = GObject.registerClass(
-        class CurrentMonitorAppSwitcherPopup extends altTab.AppSwitcherPopup {
-            _finish(timestamp) {
-                if (this._currentWindow < 0) {
-                    extension.movePointer();
-                }
-                super._finish(timestamp);
-            }
-        }
-	);
-}
+let extension = null;
+export default class {
+    enable() {
+        extension = new Extension();
+    }
 
-function enable() {
-    extension = new Extension();
-}
-
-function disable() {
-    extension.destroy();
-    extension = null;
+    disable() {
+        extension.unpatch();
+        extension = null;
+    }
 }
